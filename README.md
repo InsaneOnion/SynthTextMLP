@@ -1,4 +1,4 @@
-# SynthMLTP
+# SynthTextMLP
 
 ## References
 
