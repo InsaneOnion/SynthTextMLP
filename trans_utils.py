@@ -1,36 +1,91 @@
-import hashlib
-import random
-import requests
+from typing import Tuple, List
+from googletrans import Translator
 
-# 百度翻译 API 配置信息
-APP_ID = '20241204002218674'
-API_KEY = 'mCq9FmT6wcqbzMzK4A_U'
-URL = 'https://fanyi-api.baidu.com/api/trans/vip/translate'
 
-def baidu_translate(query, from_lang='en', to_lang='zh'):
-    salt = str(random.randint(32768, 65536))
+class My_Translator():
+    def __init__(self, src_lang: str = "en", tar_lang: str = "zh-cn") -> None:
+        self.src_lang = src_lang
+        self.tar_lang = tar_lang
+        self.translator = Translator()
 
-    sign = APP_ID + query + salt + API_KEY
-    sign = hashlib.md5(sign.encode('utf-8')).hexdigest()
+    def is_fullwidth(self, text: str) -> bool:
+        return any('\u4e00' <= char <= '\u9fff' for char in text)
 
-    params = {
-        'q': query,
-        'from': from_lang,
-        'to': to_lang,
-        'appid': APP_ID,
-        'salt': salt,
-        'sign': sign
-    }
+    def split_text_into_lines(self, text: str, char_ratio: list) -> list:
+        lines = []
+        current_length = 0
+        last_length = current_length
+        
+        for ratio in char_ratio:
+            target_length = int(ratio * len(text))
 
-    response = requests.get(URL, params=params)
-    result = response.json()
+            if target_length < 1: target_length = 1
+            else: target_length = round(target_length)
 
-    if 'trans_result' in result:
-        return result['trans_result'][0]['dst']
-    else:
-        return 'Error: ' + result.get('error_msg', 'Unknown error')
+            current_length += target_length
+            lines.append(text[last_length:current_length + 1])
+            last_length = current_length + 1
+
+        if last_length <= len(text):
+            lines[-1] += text[last_length:]
+
+        return lines
+
+    def center_align_lines(self, lines: list, is_fullwidth: bool) -> list:
+        max_length = max(len(line) for line in lines)
+        
+        if is_fullwidth:
+            space_char = ' '
+        else:
+            space_char = ' ' * 2
+        
+        centered_lines = []
+        for line in lines:
+            l = len(line)
+            padding_length = (max_length - l) // 2
+            centered_line = padding_length * space_char + line + (max_length - l - padding_length) * space_char
+            centered_lines.append(centered_line)
+        
+        return centered_lines
+
+    def handle_tgt_text(self, text: str, char_ratio: list, centered: bool):
+        """
+        1. 判断输入的文本是全角字符文本（如中文）还是半角字符
+        2. 根据char_ratio将这段文本划分为len(char_ratio)行 （使用某种合适的方案）
+        3. 如果centered为True 则将这几行文本做居中对齐,即在前后填充空格让每行的长度与长度最大行相等(想要的是在使用pygame渲染字体后视觉上相等因此需要注意全角字符的填充方式)
+        """
+        if len(char_ratio) == 1:
+            return text
+        is_fullwidth = self.is_fullwidth(text)
+        lines = self.split_text_into_lines(text, char_ratio)
+        if centered:
+            lines = self.center_align_lines(lines, is_fullwidth)
+        return '\n'.join(lines)
+
+    def handle_src_text(self, text: list) -> Tuple[str, List[float], bool]:
+        lines = text.split('\n')
+        if len(lines) == 1:
+            return text.strip(), [1], False
+        else:
+            centered = True
+            char_ratio = []
+            total_len = 0
+            ret_text = ""
+            l = len(lines[0])
+            for line in lines:
+                centered &= (len(line) == l)
+                total_len += len(line.strip())
+                ret_text += line.strip() + " "
+            for line in lines:
+                char_ratio.append(len(line.strip()) / total_len)
+            return ret_text.rstrip(), char_ratio, centered
+
+
+    def translate(self, src_text: str) -> str:
+        tgt_text = self.translator.translate(src_text, self.tar_lang, self.src_lang).text
+        return tgt_text
+
+
 
 if "__main__" == __name__:
     text = r"   I   \n want to go  \n to beijing"
-    translated_text = baidu_translate(text)
-    print("译文:", translated_text)
