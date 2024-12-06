@@ -15,11 +15,10 @@ Entry-point for generating synthetic text images, as described in:
 import numpy as np
 import h5py
 import json
-import os, sys, traceback
+import os, traceback
 import os.path as osp
 from synthgen import *
 from common import *
-import wget, tarfile
 
 
 ## Define some configuration variables:
@@ -53,6 +52,9 @@ def save_image_and_labels(imname, res, output_dir):
     """
     Save the synthetically generated text image and its labels as a JSON file.
     """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     for i, result in enumerate(res):
         img = result['img']
         img_path = osp.join(output_dir, f"{imname}_{i}.jpg")
@@ -130,7 +132,8 @@ def main(viz=False, no_db=False):
       if len(res) > 0:
           if no_db:
             # 如果 no_db 为 True，则保存图片和标签
-            save_image_and_labels(imname, res, config["out_dir"] + "/img")
+            save_image_and_labels(imname, res['src'], config["out_dir"] + "/src")
+            save_image_and_labels(imname, res['tgt'], config["out_dir"] + "/tgt")
           else:
             # 如果 no_db 为 False，则添加到数据库
             add_res_to_db(imname, res, out_db)

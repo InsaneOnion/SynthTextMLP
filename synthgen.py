@@ -484,34 +484,56 @@ class RendererV3(object):
         font = self.text_renderer.font_state.sample()
         font = self.text_renderer.font_state.init_font(font)
 
-        render_res = self.text_renderer.render_sample(font,collision_mask)
+        # render_res = self.text_renderer.render_sample(font,collision_mask)
+        render_res = self.text_renderer.render_bilingual_sample(font, collision_mask)
         if render_res is None: # rendering not successful
             return #None
         else:
-            text_mask,loc,bb,text = render_res
+            src_text_mask,src_loc,src_bb,src_text = render_res["src"]
+            tgt_text_mask,tgt_loc,tgt_bb,tgt_text = render_res["tgt"]
+            # print("src: ", render_res['src'])
+            # print("tgt: ", render_res['tgt'])
+            if len(tgt_text) != tgt_bb.shape[-1]:
+                print("tgt_text: ", tgt_text)
+                print("tgt_bb: ", tgt_bb)
 
         # update the collision mask with text:
-        collision_mask += (255 * (text_mask>0)).astype('uint8')
+        src_collision_mask = collision_mask + (255 * (src_text_mask>0)).astype('uint8')
+        tgt_collision_mask = collision_mask + (255 * (tgt_text_mask>0)).astype('uint8')
 
         # warp the object mask back onto the image:
-        text_mask_orig = text_mask.copy()
-        bb_orig = bb.copy()
-        text_mask = self.warpHomography(text_mask,H,rgb.shape[:2][::-1])
-        bb = self.homographyBB(bb,Hinv)
+        # src_text_mask_orig = src_text_mask.copy()
+        # tgt_text_mask_orig = tgt_text_mask.copy()
+        src_bb_orig = src_bb.copy()
+        tgt_bb_orig = tgt_bb.copy()
 
-        if not self.bb_filter(bb_orig,bb,text):
+        src_text_mask = self.warpHomography(src_text_mask, H, rgb.shape[:2][::-1])
+        tgt_text_mask = self.warpHomography(tgt_text_mask, H, rgb.shape[:2][::-1])
+
+        src_bb = self.homographyBB(src_bb, Hinv)
+        tgt_bb = self.homographyBB(tgt_bb, Hinv)
+
+        if not self.bb_filter(src_bb_orig, src_bb, src_text):
+            #warn("bad charBB statistics")
+            return #None
+
+        if not self.bb_filter(tgt_bb_orig, tgt_bb, tgt_text):
             #warn("bad charBB statistics")
             return #None
 
         # get the minimum height of the character-BB:
-        min_h = self.get_min_h(bb,text)
+        src_min_h = self.get_min_h(src_bb, src_text)
+        tgt_min_h = self.get_min_h(tgt_bb, tgt_text)
 
         #feathering:
-        text_mask = self.feather(text_mask, min_h)
+        src_text_mask = self.feather(src_text_mask, src_min_h)
+        tgt_text_mask = self.feather(tgt_text_mask, tgt_min_h)
 
-        im_final = self.colorizer.color(rgb,[text_mask],np.array([min_h]))
+        src_im_final = self.colorizer.color(rgb, [src_text_mask], np.array([src_min_h]))
+        tgt_im_final = self.colorizer.color(rgb, [tgt_text_mask], np.array([tgt_min_h]))
 
-        return im_final, text, bb, collision_mask
+        return {"src": [src_im_final, src_text, src_bb, src_collision_mask],
+                "tgt": [tgt_im_final, tgt_text, tgt_bb, tgt_collision_mask]}
 
 
     def get_num_text_regions(self, nregions):
@@ -613,7 +635,8 @@ class RendererV3(object):
             traceback.print_exc()
             return []
 
-        res = []
+        src_res = []
+        tgt_res = []
         for i in range(ninstance):
             place_masks = copy.deepcopy(regions['place_mask'])
 
@@ -629,8 +652,10 @@ class RendererV3(object):
 
             placed = False
             img = rgb.copy()
-            itext = []
-            ibb = []
+            src_itext = []
+            src_ibb = []
+            tgt_itext = []
+            tgt_ibb = []
 
             # process regions: 
             num_txt_regions = len(reg_idx)
@@ -658,26 +683,38 @@ class RendererV3(object):
 
                 if txt_render_res is not None:
                     placed = True
-                    img,text,bb,collision_mask = txt_render_res
+
+                    src_im_final, src_text, src_bb, src_collision_mask = txt_render_res["src"]
+                    tgt_im_final, tgt_text, tgt_bb, tgt_collision_mask = txt_render_res["tgt"]
+
                     # update the region collision mask:
-                    place_masks[ireg] = collision_mask
+                    place_masks[ireg] = src_collision_mask
+
                     # store the result:
-                    itext.append(text)
-                    ibb.append(bb)
+                    src_itext.append(src_text)
+                    src_ibb.append(src_bb)
+                    tgt_itext.append(tgt_text)
+                    tgt_ibb.append(tgt_bb)
+
 
             if placed:
-                # at least 1 word was placed in this instance:
-                idict['img'] = img
-                idict['txt'] = itext
-                idict['charBB'] = np.concatenate(ibb, axis=2)
-                idict['wordBB'] = self.char2wordBB(idict['charBB'].copy(), ' '.join(itext))
-                # print(idict['charBB'].shape, "char")
-                # print(idict['wordBB'].shape, "word")
-                res.append(idict.copy())
-                if viz:
-                    viz_textbb(1,img, [idict['wordBB']], alpha=1.0)
-                    viz_masks(2,img,seg,depth,regions['label'])
-                    # viz_regions(rgb.copy(),xyz,seg,regions['coeff'],regions['label'])
-                    if i < ninstance-1:
-                        input(colorize(Color.BLUE,'continue?',True))                    
-        return res
+
+                src_idict = {
+                    'img': src_im_final,
+                    'txt': src_text,
+                    'charBB': src_bb,
+                    'wordBB': self.char2wordBB(src_bb.copy(), src_text),
+                    'collision_mask': src_collision_mask
+                }
+
+                tgt_idict = {
+                    'img': tgt_im_final,
+                    'txt': tgt_text,
+                    'charBB': tgt_bb,
+                    'wordBB': self.char2wordBB(tgt_bb.copy(), tgt_text),
+                    'collision_mask': tgt_collision_mask
+                }
+
+                src_res.append(src_idict.copy())
+                tgt_res.append(tgt_idict.copy())
+        return {"src": src_res, "tgt": tgt_res}

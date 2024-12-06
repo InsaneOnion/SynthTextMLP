@@ -16,6 +16,7 @@ from PIL import Image
 import math
 from common import *
 import pickle
+from trans_utils import My_Translator
 
 def sample_weighted(p_dict):
     ps = list(p_dict.keys())
@@ -171,7 +172,10 @@ class RenderFont(object):
         isword = len(word_text.split())==1
 
         # do curved iff, the length of the word <= 10
-        if not isword or wl > 10 or np.random.rand() > self.p_curved:
+        # print("word_text", word_text)
+        # print("wl: ", wl)
+        # print("isword: ", isword)
+        if not isword or wl > 10 or wl == 1 or np.random.rand() > self.p_curved:
             return self.render_multiline(font, word_text)
 
         # create the surface:
@@ -192,6 +196,7 @@ class RenderFont(object):
         rect = font.get_rect(word_text[mid_idx])
         rect.centerx = surf.get_rect().centerx
         rect.centery = surf.get_rect().centery + rect.height
+        # print("curve[mid_idx]: ", curve[mid_idx])
         rect.centery +=  curve[mid_idx]
         ch_bounds = font.render_to(surf, rect, word_text[mid_idx], rotation=rots[mid_idx])
         ch_bounds.x = rect.x + ch_bounds.x
@@ -385,6 +390,91 @@ class RenderFont(object):
         return #None
 
 
+    def render_bilingual_sample(self,font,mask):
+        """
+        Places text in the "collision-free" region as indicated
+        in the mask -- 255 for unsafe, 0 for safe.
+        The text is rendered using FONT, the text content is TEXT.
+        """
+        #H,W = mask.shape
+        H,W = self.robust_HW(mask)
+        f_asp = self.font_state.get_aspect_ratio(font)
+
+        # find the maximum height in pixels:
+        max_font_h = min(0.9*H, (1/f_asp)*W/(self.min_nchar+1))
+        max_font_h = min(max_font_h, self.max_font_h)
+        if max_font_h < self.min_font_h: # not possible to place any text here
+            return #None
+
+        # let's just place one text-instance for now
+        ## TODO : change this to allow multiple text instances?
+        i = 0
+        while i < self.max_shrink_trials and max_font_h > self.min_font_h:
+            # if i > 0:
+            #     print colorize(Color.BLUE, "shrinkage trial : %d"%i, True)
+
+            # sample a random font-height:
+            f_h_px = self.sample_font_height_px(self.min_font_h, max_font_h)
+            #print "font-height : %.2f (min: %.2f, max: %.2f)"%(f_h_px, self.min_font_h,max_font_h)
+            # convert from pixel-height to font-point-size:
+            f_h = self.font_state.get_font_size(font, f_h_px)
+
+            # update for the loop
+            max_font_h = f_h_px 
+            i += 1
+
+            font.size = f_h # set the font-size
+
+            # compute the max-number of lines/chars-per-line:
+            nline,nchar = self.get_nline_nchar(mask.shape[:2],f_h,f_h*f_asp)
+            #print "  > nline = %d, nchar = %d"%(nline, nchar)
+
+            assert nline >= 1 and nchar >= self.min_nchar
+
+            # sample text:
+            text_type = sample_weighted(self.p_text)
+            src_text = self.text_source.sample(nline,nchar,text_type)
+            if len(src_text)==0 or np.any([len(line)==0 for line in src_text]):
+                continue
+            #print colorize(Color.GREEN, text)
+
+            # translate the text to another language
+            print("src_text: ", src_text)
+            self.translate = My_Translator("en", "zh-cn")
+            handled_text, char_ratio, centered = self.translate.handle_src_text(src_text)
+            print("handled_text: ", handled_text)
+            print("char_ratio: ", char_ratio)
+            print("centered: ", centered)
+            tgt_text = self.translate.translate(handled_text)
+            print("translated_tgt_text: ", tgt_text)
+            tgt_text = self.translate.handle_tgt_text(tgt_text, char_ratio, centered)
+            print("handled_tgt_text: ", tgt_text)
+
+            # render the text:
+            src_txt_arr,src_text,src_bb = self.render_curved(font, src_text)
+            tgt_txt_arr,tgt_text,tgt_bb = self.render_curved(font, tgt_text)
+            src_bb = self.bb_xywh2coords(src_bb)
+            tgt_bb = self.bb_xywh2coords(tgt_bb)
+
+            # make sure that the text-array is not bigger than mask array:
+            if np.any(np.r_[src_txt_arr.shape[:2]] > np.r_[mask.shape[:2]]):
+                #warn("text-array is bigger than mask")
+                continue
+
+            # if np.any(np.r_[tgt_txt_arr.shape[:2]] > np.r_[mask.shape[:2]]):
+            #     #warn("text-array is bigger than mask")
+            #     continue
+
+            # position the text within the mask:
+            print("sss2: ", src_text)
+            src_text_mask,src_loc,src_bb, _ = self.place_text([src_txt_arr], mask, [src_bb])
+            tgt_text_mask,tgt_loc,tgt_bb, _ = self.place_text([tgt_txt_arr], mask, [tgt_bb])
+            if len(src_loc) > 0 and len(tgt_loc) > 0:#successful in placing the text collision-free:
+                return {"src": [src_text_mask, src_loc[0], src_bb[0], src_text],
+                        "tgt": [tgt_text_mask, tgt_loc[0], tgt_bb[0], tgt_text]}
+        return #None
+
+
     def visualize_bb(self, text_arr, bbs):
         ta = text_arr.copy()
         for r in bbs:
@@ -419,19 +509,19 @@ class FontState(object):
 
         # get character-frequencies in the English language:
         with open(char_freq_path,'rb') as f:
-            #self.char_freq = cp.load(f)
-            u = pickle._Unpickler(f)
-            u.encoding = 'latin1'
-            p = u.load()
-            self.char_freq = p
+            self.char_freq = cp.load(f)
+            # u = pickle._Unpickler(f)
+            # u.encoding = 'latin1'
+            # p = u.load()
+            # self.char_freq = p
 
         # get the model to convert from pixel to font pt size:
         with open(font_model_path,'rb') as f:
-            #self.font_model = cp.load(f)
-            u = pickle._Unpickler(f)
-            u.encoding = 'latin1'
-            p = u.load()
-            self.font_model = p
+            self.font_model = cp.load(f)
+            # u = pickle._Unpickler(f)
+            # u.encoding = 'latin1'
+            # p = u.load()
+            # self.font_model = p
             
         # get the names of fonts to use:
         self.FONT_LIST = osp.join(data_dir, 'fonts/fontlist.txt')
