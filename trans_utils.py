@@ -22,11 +22,16 @@ class My_Translator():
             if target_length < 1: target_length = 1
             else: target_length = round(target_length)
 
-            current_length += target_length
-            lines.append(text[last_length:current_length + 1])
-            last_length = current_length + 1
+            # 确保每行至少有一个字符
+            if current_length + target_length > len(text):
+                target_length = len(text) - current_length
 
-        if last_length <= len(text):
+            current_length += target_length
+            lines.append(text[last_length:current_length])
+            last_length = current_length
+
+        # 确保最后一行至少有一个字符
+        if last_length < len(text):
             lines[-1] += text[last_length:]
 
         return lines
@@ -62,22 +67,17 @@ class My_Translator():
             lines = self.center_align_lines(lines, is_fullwidth)
         return '\n'.join(lines)
 
-    def handle_src_text(self, text: list) -> Tuple[str, List[float], bool]:
+    def handle_src_text(self, text: str) -> Tuple[str, List[float], bool]:
         lines = text.split('\n')
         if len(lines) == 1:
             return text.strip(), [1], False
         else:
-            centered = True
+            centered = all(len(line) == len(lines[0]) for line in lines)
             char_ratio = []
-            total_len = 0
-            ret_text = ""
-            l = len(lines[0])
-            for line in lines:
-                centered &= (len(line) == l)
-                total_len += len(line.strip())
-                ret_text += line.strip() + " "
-            for line in lines:
-                char_ratio.append(len(line.strip()) / total_len)
+            total_len = sum(len(line.strip()) if centered else len(line) for line in lines)
+            ret_text = " ".join(line.strip() for line in lines)
+            char_ratio = [len(line.strip()) / total_len if centered else len(line) / total_len for line in lines]
+
             return ret_text.rstrip(), char_ratio, centered
 
 

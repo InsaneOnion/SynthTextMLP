@@ -111,6 +111,19 @@ class RenderFont(object):
 
         pygame.init()
 
+    def render_bilingual_multiline(self, font, text_en, text_zh):
+        """
+        渲染配对的英文和中文文本为多行
+        返回两个渲染结果：英文和中文
+        """
+        # 渲染英文文本
+        surf_arr_en, words_en, bbs_en = self.render_multiline(font, text_en)
+        
+        # 渲染中文文本
+        surf_arr_zh, words_zh, bbs_zh = self.render_multiline(font, text_zh)
+
+        return surf_arr_en, words_en, bbs_en, surf_arr_zh, words_zh, bbs_zh
+
     def render_multiline(self,font,text):
         """
         renders multiline TEXT on the pygame surface SURF with the
@@ -163,6 +176,80 @@ class RenderFont(object):
         surf_arr = surf_arr.swapaxes(0,1)
         #self.visualize_bb(surf_arr,bbs)
         return surf_arr, words, bbs
+
+    def render_bilingual_curved(self, font, word_text_en, word_text_zh):
+        """
+        使用弯曲基线渲染配对的英文和中文文本
+        """
+        wl_en = len(word_text_en)
+        wl_zh = len(word_text_zh)
+
+        # 确保文本长度不超过10
+        if wl_en > 10 or wl_zh > 10 or wl_zh == 1 or np.random.rand() > self.p_curved:
+            return self.render_bilingual_multiline(font, word_text_en, word_text_zh)
+
+        # 创建表面
+        lspace = font.get_sized_height() + 1
+        fsize_en = (round(2.0 * font.get_rect(word_text_en).width), round(3 * lspace))
+        fsize_zh = (round(2.0 * font.get_rect(word_text_zh).width), round(3 * lspace))
+        fsize = (max(fsize_en[0], fsize_zh[0]), fsize_en[1] + fsize_zh[1])  # 确保宽度一致
+
+        surf = pygame.Surface(fsize, pygame.locals.SRCALPHA, 32)
+
+        # 渲染英文文本
+        mid_idx_en = wl_en // 2
+        BS_en = self.baselinestate.get_sample()
+        curve_en = [BS_en['curve'](i - mid_idx_en) for i in range(wl_en)]
+        curve_en[mid_idx_en] = -np.sum(curve_en) / (wl_en - 1)
+        rots_en = [-int(math.degrees(math.atan(BS_en['diff'](i - mid_idx_en) / (font.size / 2)))) for i in range(wl_en)]
+
+        bbs_en = []
+        for i, ch in enumerate(word_text_en):
+            rect = font.get_rect(ch)
+            rect.centerx = surf.get_rect().centerx
+            rect.centery = surf.get_rect().centery - fsize_zh[1] + rect.height  # 调整位置
+            rect.centery += curve_en[i]
+
+            ch_bounds = font.render_to(surf, rect, ch, rotation=rots_en[i])
+            ch_bounds.x = rect.x + ch_bounds.x
+            ch_bounds.y = rect.y - ch_bounds.y
+            bbs_en.append(np.array(ch_bounds))
+
+        # 渲染中文文本
+        mid_idx_zh = wl_zh // 2
+        BS_zh = self.baselinestate.get_sample() 
+        curve_zh = [BS_zh['curve'](i - mid_idx_zh) for i in range(wl_zh)]
+        curve_zh[mid_idx_zh] = -np.sum(curve_zh) / (wl_zh - 1)
+        rots_zh = [-int(math.degrees(math.atan(BS_zh['diff'](i - mid_idx_zh) / (font.size / 2)))) for i in range(wl_zh)]
+
+        bbs_zh = []
+        for i, ch in enumerate(word_text_zh):
+            rect = font.get_rect(ch)
+            rect.centerx = surf.get_rect().centerx
+            rect.centery = surf.get_rect().centery + rect.height  # 调整位置
+            rect.centery += curve_zh[i]
+
+            ch_bounds = font.render_to(surf, rect, ch, rotation=rots_zh[i])
+            ch_bounds.x = rect.x + ch_bounds.x
+            ch_bounds.y = rect.y - ch_bounds.y
+            bbs_zh.append(np.array(ch_bounds))
+
+        # 获取字符的联合矩形以进行裁剪
+        r0_en = pygame.Rect(bbs_en[0])
+        rect_union_en = r0_en.unionall(bbs_en)
+        r0_zh = pygame.Rect(bbs_zh[0])
+        rect_union_zh = r0_zh.unionall(bbs_zh)
+
+        # 裁剪表面以适应文本
+        bbs_en = np.array(bbs_en)
+        bbs_zh = np.array(bbs_zh)
+        surf_arr_en, bbs_en = crop_safe(pygame.surfarray.pixels_alpha(surf), rect_union_en, bbs_en, pad=5)
+        surf_arr_zh, bbs_zh = crop_safe(pygame.surfarray.pixels_alpha(surf), rect_union_zh, bbs_zh, pad=5)
+
+        surf_arr_en = surf_arr_en.swapaxes(0, 1)
+        surf_arr_zh = surf_arr_zh.swapaxes(0, 1)
+
+        return surf_arr_en, word_text_en, bbs_en, surf_arr_zh, word_text_zh, bbs_zh
 
     def render_curved(self, font, word_text):
         """
@@ -453,6 +540,7 @@ class RenderFont(object):
             # render the text:
             src_txt_arr,src_text,src_bb = self.render_curved(font, src_text)
             tgt_txt_arr,tgt_text,tgt_bb = self.render_curved(font, tgt_text)
+            # src_txt_arr, src_text, src_bb, tgt_txt_arr, tgt_text, tgt_bb = self.render_bilingual_curved(font, src_text, tgt_text)
             src_bb = self.bb_xywh2coords(src_bb)
             tgt_bb = self.bb_xywh2coords(tgt_bb)
 
@@ -465,10 +553,19 @@ class RenderFont(object):
             #     #warn("text-array is bigger than mask")
             #     continue
 
+            # 将 ndarray 转为 PIL 图像
+            src_img = Image.fromarray(src_txt_arr)
+            tgt_img = Image.fromarray(tgt_txt_arr)
+
+            # 保存为 PNG 图片
+            src_img.save('src_text_mask_pil.png')
+            tgt_img.save('tgt_text_mask_pil.png')
             # position the text within the mask:
             print("sss2: ", src_text)
             src_text_mask,src_loc,src_bb, _ = self.place_text([src_txt_arr], mask, [src_bb])
             tgt_text_mask,tgt_loc,tgt_bb, _ = self.place_text([tgt_txt_arr], mask, [tgt_bb])
+
+
             if len(src_loc) > 0 and len(tgt_loc) > 0:#successful in placing the text collision-free:
                 return {"src": [src_text_mask, src_loc[0], src_bb[0], src_text],
                         "tgt": [tgt_text_mask, tgt_loc[0], tgt_bb[0], tgt_text]}
@@ -765,3 +862,4 @@ class TextSource(object):
             return '\n'.join(lines)
         else:
             return []
+
