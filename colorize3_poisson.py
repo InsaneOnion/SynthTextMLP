@@ -310,70 +310,39 @@ class Colorize(object):
         fg_col,bg_col = self.font_color.sample_from_data(bg_arr)
         return Layer(alpha=text_arr, color=fg_col), fg_col, bg_col
 
-    def sample_color(self):
+    def sample(self):
         """
-        采样文本颜色
+        采样渲染参数，确保英文和中文文本使用相同的风格
         """
-        # 使用已有的 font_color 对象来采样颜色
-        fg_col, bg_col = self.font_color.sample_from_data(np.ones((100,100,3), dtype=np.uint8) * 255)
+        # 使用原有的颜色采样逻辑
+        bg_arr = np.ones((100,100,3), dtype=np.uint8) * 255  # 白色背景
+        l_text, fg_col, bg_col = self.color_text(np.ones((100,100), dtype=np.uint8), 30, bg_arr)
+        
         return {
-            'fg_color': fg_col,  # 前景色（文本颜色）
-            'bg_color': bg_col   # 背景色
-        }
-
-    def sample_shadow(self):
-        """
-        采样阴影参数
-        """
-        return {
+            'fg_color': fg_col,
+            'bg_color': bg_col,
+            'use_border': np.random.rand() < self.p_border,
             'use_shadow': np.random.rand() < self.p_drop_shadow,
             'shadow_angle': np.pi/4 * np.random.choice([1,3,5,7]) + 0.5*np.random.randn(),
             'shadow_opacity': 0.50 + 0.1*np.random.randn()
         }
 
-    def sample_border(self):
-        """
-        采样边框参数
-        """
-        return {
-            'use_border': np.random.rand() < self.p_border,
-            'border_color': None  # 将在渲染时根据文本颜色确定
-        }
-
-    def sample(self):
-        """
-        采样渲染参数，确保英文和中文文本使用相同的风格
-        """
-        return {
-            'color': self.sample_color(),
-            'shadow': self.sample_shadow(),
-            'border': self.sample_border()
-        }
-
     def color(self, bg_arr, text_arr, min_h, color_params=None):
         """
         使用预定义的参数渲染文本
-        bg_arr: 背景图像
-        text_arr: 文本mask列表
-        min_h: 最小字符高度
-        color_params: 渲染参数
         """
         if color_params is None:
             color_params = self.sample()
 
-        # 获取颜色参数
-        fg_col = color_params['color']['fg_color']
-        bg_col = color_params['color']['bg_color']
-
         # 创建文本层
-        l_text = Layer(alpha=text_arr[0], color=fg_col)
+        l_text = Layer(alpha=text_arr[0], color=color_params['fg_color'])
         l_bg = Layer(alpha=255*np.ones_like(text_arr[0],'uint8'), color=bg_arr)
         
         layers = [l_text]
         blends = []
 
         # 添加边框
-        if color_params['border']['use_border']:
+        if color_params['use_border']:
             border_size = 3 if min_h > 30 else 1
             border_a = self.border(l_text.alpha, size=border_size)
             border_col = self.color_border(l_text.color, l_bg.color)
@@ -382,13 +351,13 @@ class Colorize(object):
             blends.append('normal')
 
         # 添加阴影
-        if color_params['shadow']['use_shadow']:
+        if color_params['use_shadow']:
             shadow_size = 5 if min_h > 30 else 3
             shadow = self.drop_shadow(l_text.alpha, 
-                                    color_params['shadow']['shadow_angle'],
+                                    color_params['shadow_angle'],
                                     shadow_size * 2,
                                     shadow_size,
-                                    color_params['shadow']['shadow_opacity'])
+                                    color_params['shadow_opacity'])
             l_shadow = Layer(shadow, 0)
             layers.append(l_shadow)
             blends.append('normal')
