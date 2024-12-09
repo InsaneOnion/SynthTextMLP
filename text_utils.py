@@ -109,6 +109,10 @@ class RenderFont(object):
         # get font-state object:
         self.font_state = FontState(data_dir)
 
+        # initialize colorizer:
+        from colorize3_poisson import Colorize
+        self.colorizer = Colorize(data_dir)
+
         pygame.init()
 
     def render_bilingual_multiline(self, font, text_en, text_zh):
@@ -181,70 +185,134 @@ class RenderFont(object):
         """
         使用弯曲基线渲染配对的英文和中文文本
         """
+        # 移除多余的空格和换行符
+        word_text_en = ' '.join(word_text_en.split())
+        word_text_zh = ' '.join(word_text_zh.split())
+        
         wl_en = len(word_text_en)
         wl_zh = len(word_text_zh)
 
         # 确保文本长度不超过10
-        if wl_en > 10 or wl_zh > 10 or wl_zh == 1 or np.random.rand() > self.p_curved:
-            return self.render_bilingual_multiline(font, word_text_en, word_text_zh)
+        if (wl_en > 10 or wl_zh > 10 or wl_zh == 1 or 
+            np.random.rand() > self.p_curved or 
+            font.underline):  # 如果字体有下划线，不进行旋转
+            # 分别渲染英文和中文文本
+            en_result = self.render_multiline(font, word_text_en)
+            zh_result = self.render_multiline(font, word_text_zh)
+            
+            # 确保两个渲染结果都成功
+            if en_result is None or zh_result is None:
+                return None
+            
+            # 解包渲染结果
+            surf_arr_en, text_en, bb_en = en_result
+            surf_arr_zh, text_zh, bb_zh = zh_result
+            
+            return surf_arr_en, text_en, bb_en, surf_arr_zh, text_zh, bb_zh
 
-        # 创建表面
+        # 创建两个独立的表面
         lspace = font.get_sized_height() + 1
         fsize_en = (round(2.0 * font.get_rect(word_text_en).width), round(3 * lspace))
         fsize_zh = (round(2.0 * font.get_rect(word_text_zh).width), round(3 * lspace))
-        fsize = (max(fsize_en[0], fsize_zh[0]), fsize_en[1] + fsize_zh[1])  # 确保宽度一致
 
-        surf = pygame.Surface(fsize, pygame.locals.SRCALPHA, 32)
+        surf_en = pygame.Surface(fsize_en, pygame.locals.SRCALPHA, 32)
+        surf_zh = pygame.Surface(fsize_zh, pygame.locals.SRCALPHA, 32)
 
-        # 渲染英文文本
-        mid_idx_en = wl_en // 2
-        BS_en = self.baselinestate.get_sample()
-        curve_en = [BS_en['curve'](i - mid_idx_en) for i in range(wl_en)]
-        curve_en[mid_idx_en] = -np.sum(curve_en) / (wl_en - 1)
-        rots_en = [-int(math.degrees(math.atan(BS_en['diff'](i - mid_idx_en) / (font.size / 2)))) for i in range(wl_en)]
+        try:
+            # 渲染英文文本
+            mid_idx_en = wl_en // 2
+            BS_en = self.baselinestate.get_sample()
+            curve_en = [BS_en['curve'](i - mid_idx_en) for i in range(wl_en)]
+            curve_en[mid_idx_en] = -np.sum(curve_en) / (wl_en - 1)
+            rots_en = [-int(math.degrees(math.atan(BS_en['diff'](i - mid_idx_en) / (font.size / 2)))) for i in range(wl_en)]
 
-        bbs_en = []
-        for i, ch in enumerate(word_text_en):
-            rect = font.get_rect(ch)
-            rect.centerx = surf.get_rect().centerx
-            rect.centery = surf.get_rect().centery - fsize_zh[1] + rect.height  # 调整位置
-            rect.centery += curve_en[i]
+            # 计算英文文本的总宽度和每个字符的宽度
+            en_char_widths = [font.get_rect(ch).width for ch in word_text_en if not ch.isspace()]
+            total_width_en = sum(en_char_widths)
+            start_x_en = (surf_en.get_rect().width - total_width_en) // 2
+            current_x_en = start_x_en
 
-            ch_bounds = font.render_to(surf, rect, ch, rotation=rots_en[i])
-            ch_bounds.x = rect.x + ch_bounds.x
-            ch_bounds.y = rect.y - ch_bounds.y
-            bbs_en.append(np.array(ch_bounds))
+            bbs_en = []
+            char_idx = 0
+            for i, ch in enumerate(word_text_en):
+                if ch.isspace():
+                    current_x_en += font.get_rect(' ').width
+                    continue
+                
+                rect = font.get_rect(ch)
+                rect.x = current_x_en
+                rect.centery = surf_en.get_rect().centery
+                rect.centery += curve_en[i]
 
-        # 渲染中文文本
-        mid_idx_zh = wl_zh // 2
-        BS_zh = self.baselinestate.get_sample() 
-        curve_zh = [BS_zh['curve'](i - mid_idx_zh) for i in range(wl_zh)]
-        curve_zh[mid_idx_zh] = -np.sum(curve_zh) / (wl_zh - 1)
-        rots_zh = [-int(math.degrees(math.atan(BS_zh['diff'](i - mid_idx_zh) / (font.size / 2)))) for i in range(wl_zh)]
+                try:
+                    ch_bounds = font.render_to(surf_en, rect, ch, rotation=rots_en[i])
+                except ValueError:
+                    ch_bounds = font.render_to(surf_en, rect, ch)
+                
+                ch_bounds.x = rect.x + ch_bounds.x
+                ch_bounds.y = rect.y - ch_bounds.y
+                bbs_en.append(np.array(ch_bounds))
+                
+                current_x_en += en_char_widths[char_idx]
+                char_idx += 1
 
-        bbs_zh = []
-        for i, ch in enumerate(word_text_zh):
-            rect = font.get_rect(ch)
-            rect.centerx = surf.get_rect().centerx
-            rect.centery = surf.get_rect().centery + rect.height  # 调整位置
-            rect.centery += curve_zh[i]
+            # 渲染中文文本
+            mid_idx_zh = wl_zh // 2
+            BS_zh = self.baselinestate.get_sample() 
+            curve_zh = [BS_zh['curve'](i - mid_idx_zh) for i in range(wl_zh)]
+            curve_zh[mid_idx_zh] = -np.sum(curve_zh) / (wl_zh - 1)
+            rots_zh = [-int(math.degrees(math.atan(BS_zh['diff'](i - mid_idx_zh) / (font.size / 2)))) for i in range(wl_zh)]
 
-            ch_bounds = font.render_to(surf, rect, ch, rotation=rots_zh[i])
-            ch_bounds.x = rect.x + ch_bounds.x
-            ch_bounds.y = rect.y - ch_bounds.y
-            bbs_zh.append(np.array(ch_bounds))
+            # 计算中文文本的总宽度和每个字符的宽度
+            zh_char_widths = [font.get_rect(ch).width for ch in word_text_zh if not ch.isspace()]
+            total_width_zh = sum(zh_char_widths)
+            start_x_zh = (surf_zh.get_rect().width - total_width_zh) // 2
+            current_x_zh = start_x_zh
+
+            bbs_zh = []
+            char_idx = 0
+            for i, ch in enumerate(word_text_zh):
+                if ch.isspace():
+                    current_x_zh += font.get_rect(' ').width
+                    continue
+                
+                rect = font.get_rect(ch)
+                rect.x = current_x_zh
+                rect.centery = surf_zh.get_rect().centery
+                rect.centery += curve_zh[i]
+
+                try:
+                    ch_bounds = font.render_to(surf_zh, rect, ch, rotation=rots_zh[i])
+                except ValueError:
+                    ch_bounds = font.render_to(surf_zh, rect, ch)
+                
+                ch_bounds.x = rect.x + ch_bounds.x
+                ch_bounds.y = rect.y - ch_bounds.y
+                bbs_zh.append(np.array(ch_bounds))
+                
+                current_x_zh += zh_char_widths[char_idx]
+                char_idx += 1
+
+        except Exception as e:
+            print(f"Error during rendering: {str(e)}")
+            return None
+
+        # 确保边界框数组不为空
+        if not bbs_en or not bbs_zh:
+            return None
 
         # 获取字符的联合矩形以进行裁剪
+        bbs_en = np.array(bbs_en)
+        bbs_zh = np.array(bbs_zh)
+        
         r0_en = pygame.Rect(bbs_en[0])
         rect_union_en = r0_en.unionall(bbs_en)
         r0_zh = pygame.Rect(bbs_zh[0])
         rect_union_zh = r0_zh.unionall(bbs_zh)
 
         # 裁剪表面以适应文本
-        bbs_en = np.array(bbs_en)
-        bbs_zh = np.array(bbs_zh)
-        surf_arr_en, bbs_en = crop_safe(pygame.surfarray.pixels_alpha(surf), rect_union_en, bbs_en, pad=5)
-        surf_arr_zh, bbs_zh = crop_safe(pygame.surfarray.pixels_alpha(surf), rect_union_zh, bbs_zh, pad=5)
+        surf_arr_en, bbs_en = crop_safe(pygame.surfarray.pixels_alpha(surf_en), rect_union_en, bbs_en, pad=5)
+        surf_arr_zh, bbs_zh = crop_safe(pygame.surfarray.pixels_alpha(surf_zh), rect_union_zh, bbs_zh, pad=5)
 
         surf_arr_en = surf_arr_en.swapaxes(0, 1)
         surf_arr_zh = surf_arr_zh.swapaxes(0, 1)
@@ -412,80 +480,52 @@ class RenderFont(object):
             coords[1,3,i] += bbs[i,3]
         return coords
 
-
-    def render_sample(self,font,mask):
+    def get_min_h(self, bb, text):
         """
-        Places text in the "collision-free" region as indicated
-        in the mask -- 255 for unsafe, 0 for safe.
-        The text is rendered using FONT, the text content is TEXT.
+        获取文本的最小高度
+        bb: 边界框坐标 (2x4xn)
+        text: 文本字符串
         """
-        #H,W = mask.shape
-        H,W = self.robust_HW(mask)
-        f_asp = self.font_state.get_aspect_ratio(font)
-
-        # find the maximum height in pixels:
-        max_font_h = min(0.9*H, (1/f_asp)*W/(self.min_nchar+1))
-        max_font_h = min(max_font_h, self.max_font_h)
-        if max_font_h < self.min_font_h: # not possible to place any text here
-            return #None
-
-        # let's just place one text-instance for now
-        ## TODO : change this to allow multiple text instances?
-        i = 0
-        while i < self.max_shrink_trials and max_font_h > self.min_font_h:
-            # if i > 0:
-            #     print colorize(Color.BLUE, "shrinkage trial : %d"%i, True)
-
-            # sample a random font-height:
-            f_h_px = self.sample_font_height_px(self.min_font_h, max_font_h)
-            #print "font-height : %.2f (min: %.2f, max: %.2f)"%(f_h_px, self.min_font_h,max_font_h)
-            # convert from pixel-height to font-point-size:
-            f_h = self.font_state.get_font_size(font, f_h_px)
-
-            # update for the loop
-            max_font_h = f_h_px 
-            i += 1
-
-            font.size = f_h # set the font-size
-
-            # compute the max-number of lines/chars-per-line:
-            nline,nchar = self.get_nline_nchar(mask.shape[:2],f_h,f_h*f_asp)
-            #print "  > nline = %d, nchar = %d"%(nline, nchar)
-
-            assert nline >= 1 and nchar >= self.min_nchar
-
-            # sample text:
-            text_type = sample_weighted(self.p_text)
-            text = self.text_source.sample(nline,nchar,text_type)
-            if len(text)==0 or np.any([len(line)==0 for line in text]):
-                continue
-            #print colorize(Color.GREEN, text)
-
-            # render the text:
-            txt_arr,txt,bb = self.render_curved(font, text)
+        # 移除换行符和多余空格
+        text = ' '.join(text.split())
+        
+        # 确保边界框是正确的格式
+        if isinstance(bb, list):
+            bb = np.array(bb)
+        
+        # 如果是 Nx4 格式，转换为 2x4xN
+        if len(bb.shape) == 2 and bb.shape[1] == 4:
             bb = self.bb_xywh2coords(bb)
+            
+        # 计算每个字符的高度
+        heights = np.linalg.norm(bb[:,3,:] - bb[:,0,:], axis=0)
+        
+        # 只考虑字母数字字符的高度
+        alnum = np.array([ch.isalnum() for ch in text])
+        
+        # 确保 alnum 和 heights 长度匹配
+        if len(alnum) > len(heights):
+            # 如果文本长度大于边界框数量，截断文本
+            alnum = alnum[:len(heights)]
+        elif len(alnum) < len(heights):
+            # 如果边界框数量大于文本长度，截断边界框
+            heights = heights[:len(alnum)]
+        
+        if np.any(alnum):  # 如果有字母数字字符
+            heights = heights[alnum]
+            return np.min(heights)
+        else:  # 如果没有字母数字字符
+            return np.min(heights) if heights.size > 0 else 0
 
-            # make sure that the text-array is not bigger than mask array:
-            if np.any(np.r_[txt_arr.shape[:2]] > np.r_[mask.shape[:2]]):
-                #warn("text-array is bigger than mask")
-                continue
-
-            # position the text within the mask:
-            text_mask,loc,bb, _ = self.place_text([txt_arr], mask, [bb])
-            if len(loc) > 0:#successful in placing the text collision-free:
-                return text_mask,loc[0],bb[0],text
-        return #None
-
-
-    def render_bilingual_sample(self,font,mask):
+    def render_bilingual_sample(self, font, mask):
         """
         Places text in the "collision-free" region as indicated
         in the mask -- 255 for unsafe, 0 for safe.
-        The text is rendered using FONT, the text content is TEXT.
         """
         #H,W = mask.shape
         H,W = self.robust_HW(mask)
         f_asp = self.font_state.get_aspect_ratio(font)
+        print("f_asp: ", f_asp)
 
         # find the maximum height in pixels:
         max_font_h = min(0.9*H, (1/f_asp)*W/(self.min_nchar+1))
@@ -538,20 +578,20 @@ class RenderFont(object):
             print("handled_tgt_text: ", tgt_text)
 
             # render the text:
-            src_txt_arr,src_text,src_bb = self.render_curved(font, src_text)
-            tgt_txt_arr,tgt_text,tgt_bb = self.render_curved(font, tgt_text)
-            # src_txt_arr, src_text, src_bb, tgt_txt_arr, tgt_text, tgt_bb = self.render_bilingual_curved(font, src_text, tgt_text)
+            render_result = self.render_bilingual_curved(font, src_text, tgt_text)
+            if render_result is None:  # 渲染失败
+                continue
+            
+            src_txt_arr, src_text, src_bb, tgt_txt_arr, tgt_text, tgt_bb = render_result
+            
+            # 转换边界框坐标格式
             src_bb = self.bb_xywh2coords(src_bb)
             tgt_bb = self.bb_xywh2coords(tgt_bb)
 
             # make sure that the text-array is not bigger than mask array:
-            if np.any(np.r_[src_txt_arr.shape[:2]] > np.r_[mask.shape[:2]]):
-                #warn("text-array is bigger than mask")
+            if (np.any(np.r_[src_txt_arr.shape[:2]] > np.r_[mask.shape[:2]]) or 
+                np.any(np.r_[tgt_txt_arr.shape[:2]] > np.r_[mask.shape[:2]])):
                 continue
-
-            # if np.any(np.r_[tgt_txt_arr.shape[:2]] > np.r_[mask.shape[:2]]):
-            #     #warn("text-array is bigger than mask")
-            #     continue
 
             # 将 ndarray 转为 PIL 图像
             src_img = Image.fromarray(src_txt_arr)
@@ -560,16 +600,63 @@ class RenderFont(object):
             # 保存为 PNG 图片
             src_img.save('src_text_mask_pil.png')
             tgt_img.save('tgt_text_mask_pil.png')
-            # position the text within the mask:
-            print("sss2: ", src_text)
-            src_text_mask,src_loc,src_bb, _ = self.place_text([src_txt_arr], mask, [src_bb])
-            tgt_text_mask,tgt_loc,tgt_bb, _ = self.place_text([tgt_txt_arr], mask, [tgt_bb])
-
-
-            if len(src_loc) > 0 and len(tgt_loc) > 0:#successful in placing the text collision-free:
-                return {"src": [src_text_mask, src_loc[0], src_bb[0], src_text],
-                        "tgt": [tgt_text_mask, tgt_loc[0], tgt_bb[0], tgt_text]}
-        return #None
+            
+            # 首先尝试放置英文文本
+            src_text_mask, src_loc, src_bb, _ = self.place_text([src_txt_arr], mask, [src_bb])
+            
+            if len(src_loc) > 0:  # 如果英文文本放置成功
+                # 计算中文文本的位置，使其点与英文文本对齐
+                src_center = src_loc[0] + np.array([src_txt_arr.shape[0]//2, src_txt_arr.shape[1]//2])
+                tgt_offset = src_center - np.array([tgt_txt_arr.shape[0]//2, tgt_txt_arr.shape[1]//2])
+                
+                # 创建中文文本的mask
+                tgt_text_mask = np.zeros_like(mask)
+                h, w = tgt_txt_arr.shape
+                y, x = tgt_offset
+                
+                # 确保位置在有效范围内
+                if (y >= 0 and x >= 0 and 
+                    y + h <= mask.shape[0] and 
+                    x + w <= mask.shape[1]):
+                    # 放置中文文本
+                    tgt_text_mask[y:y+h, x:x+w] = tgt_txt_arr
+                    
+                    # 调整中文文本的边界框位置
+                    if isinstance(tgt_bb, list):
+                        tgt_bb = np.array(tgt_bb)
+                    if len(tgt_bb.shape) == 2 and tgt_bb.shape[1] == 4:
+                        tgt_bb = self.bb_xywh2coords(tgt_bb)
+                    
+                    # 调整边界框位置
+                    tgt_bb = tgt_bb.copy()
+                    for i in range(tgt_bb.shape[-1]):
+                        tgt_bb[:,:,i] += tgt_offset[::-1][:,None]  # 注意坐标转换
+                    
+                    # 确保边界框是 (2,4,n) 格式
+                    if isinstance(src_bb, list):
+                        src_bb = np.array(src_bb[0])  # 因为place_text返回的是列表
+                    if len(src_bb.shape) == 2 and src_bb.shape[1] == 4:
+                        src_bb = self.bb_xywh2coords(src_bb)
+                    
+                    # 最终检查边界框格式
+                    if (len(src_bb.shape) == 3 and src_bb.shape[0] == 2 and src_bb.shape[1] == 4 and
+                        len(tgt_bb.shape) == 3 and tgt_bb.shape[0] == 2 and tgt_bb.shape[1] == 4):
+                        
+                        # 获取文本的最小高度，用于确定渲染风格
+                        src_min_h = self.get_min_h(src_bb, src_text)
+                        tgt_min_h = self.get_min_h(tgt_bb, tgt_text)
+                        
+                        try:
+                            # 直接返回掩码，让 place_text 处理颜色渲染
+                            return {
+                                "src": [src_text_mask, src_loc[0], src_bb, src_text],  # 返回原始掩码
+                                "tgt": [tgt_text_mask, tgt_offset, tgt_bb, tgt_text]   # 返回原始掩码
+                            }
+                        except Exception as e:
+                            print(f"Error during colorization: {str(e)}")
+                            return None
+        
+        return None
 
 
     def visualize_bb(self, text_arr, bbs):

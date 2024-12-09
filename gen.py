@@ -131,6 +131,7 @@ def main(viz=False, no_db=False):
                             ninstance=INSTANCE_PER_IMAGE,viz=viz)
       if len(res) > 0:
           if no_db:
+            print("====================================================save====================================================")
             # 如果 no_db 为 True，则保存图片和标签
             save_image_and_labels(imname, res['src'], config["out_dir"] + "/src")
             save_image_and_labels(imname, res['tgt'], config["out_dir"] + "/tgt")

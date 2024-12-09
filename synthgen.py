@@ -428,6 +428,14 @@ class RendererV3(object):
         bb  : 2x4xn matrix of BB after perspective
         text: string of text -- for excluding symbols/punctuations.
         """
+        # 移除换行符并将多个空格合并为一个
+        text = ' '.join(text.split())
+        
+        # 确保文本长度和边界框数量匹配
+        if len(text) != bb.shape[-1]:
+            print(f"Warning: text length ({len(text)}) != bb count ({bb.shape[-1]})")
+            return False
+
         h0 = np.linalg.norm(bb0[:,3,:] - bb0[:,0,:], axis=0)
         w0 = np.linalg.norm(bb0[:,1,:] - bb0[:,0,:], axis=0)
         hw0 = np.c_[h0,w0]
@@ -436,13 +444,12 @@ class RendererV3(object):
         w = np.linalg.norm(bb[:,1,:] - bb[:,0,:], axis=0)
         hw = np.c_[h,w]
 
-        # remove newlines and spaces:
-        text = ''.join(text.split())
-        assert len(text)==bb.shape[-1]
-
         alnum = np.array([ch.isalnum() for ch in text])
         hw0 = hw0[alnum,:]
         hw = hw[alnum,:]
+
+        if len(hw0) == 0 or len(hw) == 0:  # 如果没有字母数字字符
+            return False
 
         min_h0, min_h = np.min(hw0[:,0]), np.min(hw[:,0])
         asp0, asp = hw0[:,0]/hw0[:,1], hw[:,0]/hw[:,1]
@@ -484,26 +491,18 @@ class RendererV3(object):
         font = self.text_renderer.font_state.sample()
         font = self.text_renderer.font_state.init_font(font)
 
-        # render_res = self.text_renderer.render_sample(font,collision_mask)
         render_res = self.text_renderer.render_bilingual_sample(font, collision_mask)
-        if render_res is None: # rendering not successful
-            return #None
-        else:
-            src_text_mask,src_loc,src_bb,src_text = render_res["src"]
-            tgt_text_mask,tgt_loc,tgt_bb,tgt_text = render_res["tgt"]
-            # print("src: ", render_res['src'])
-            # print("tgt: ", render_res['tgt'])
-            if len(tgt_text) != tgt_bb.shape[-1]:
-                print("tgt_text: ", tgt_text)
-                print("tgt_bb: ", tgt_bb)
+        if render_res is None:  # rendering not successful
+            return None
+        
+        src_text_mask, src_loc, src_bb, src_text = render_res["src"]
+        tgt_text_mask, tgt_loc, tgt_bb, tgt_text = render_res["tgt"]
 
         # update the collision mask with text:
         src_collision_mask = collision_mask + (255 * (src_text_mask>0)).astype('uint8')
         tgt_collision_mask = collision_mask + (255 * (tgt_text_mask>0)).astype('uint8')
 
         # warp the object mask back onto the image:
-        # src_text_mask_orig = src_text_mask.copy()
-        # tgt_text_mask_orig = tgt_text_mask.copy()
         src_bb_orig = src_bb.copy()
         tgt_bb_orig = tgt_bb.copy()
 
@@ -514,12 +513,10 @@ class RendererV3(object):
         tgt_bb = self.homographyBB(tgt_bb, Hinv)
 
         if not self.bb_filter(src_bb_orig, src_bb, src_text):
-            #warn("bad charBB statistics")
-            return #None
+            return None
 
         if not self.bb_filter(tgt_bb_orig, tgt_bb, tgt_text):
-            #warn("bad charBB statistics")
-            return #None
+            return None
 
         # get the minimum height of the character-BB:
         src_min_h = self.get_min_h(src_bb, src_text)
@@ -529,8 +526,10 @@ class RendererV3(object):
         src_text_mask = self.feather(src_text_mask, src_min_h)
         tgt_text_mask = self.feather(tgt_text_mask, tgt_min_h)
 
-        src_im_final = self.colorizer.color(rgb, [src_text_mask], np.array([src_min_h]))
-        tgt_im_final = self.colorizer.color(rgb, [tgt_text_mask], np.array([tgt_min_h]))
+        # 使用相同的渲染参数
+        color_params = self.colorizer.sample()
+        src_im_final = self.colorizer.color(rgb, [src_text_mask], np.array([src_min_h]), color_params)
+        tgt_im_final = self.colorizer.color(rgb, [tgt_text_mask], np.array([tgt_min_h]), color_params)
 
         return {"src": [src_im_final, src_text, src_bb, src_collision_mask],
                 "tgt": [tgt_im_final, tgt_text, tgt_bb, tgt_collision_mask]}

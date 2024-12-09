@@ -145,12 +145,12 @@ class FontColor(object):
 
 class Colorize(object):
 
-    def __init__(self, model_dir='data'):#, im_path):
+    def __init__(self, data_dir='data'):
         # # get a list of background-images:
         # imlist = [osp.join(im_path,f) for f in os.listdir(im_path)]
         # self.bg_list = [p for p in imlist if osp.isfile(p)]
 
-        self.font_color = FontColor(col_file=osp.join(model_dir,'models/colors_new.cp'))
+        self.font_color = FontColor(col_file=osp.join(data_dir,'models/colors_new.cp'))
 
         # probabilities of different text-effects:
         self.p_bevel = 0.05 # add bevel effect to text
@@ -310,85 +310,95 @@ class Colorize(object):
         fg_col,bg_col = self.font_color.sample_from_data(bg_arr)
         return Layer(alpha=text_arr, color=fg_col), fg_col, bg_col
 
-
-    def process(self, text_arr, bg_arr, min_h):
+    def sample_color(self):
         """
-        text_arr : one alpha mask : nxm, uint8
-        bg_arr   : background image: nxmx3, uint8
-        min_h    : height of the smallest character (px)
-
-        return text_arr blit onto bg_arr.
+        采样文本颜色
         """
-        # decide on a color for the text:
-        l_text, fg_col, bg_col = self.color_text(text_arr, min_h, bg_arr)
-        bg_col = np.mean(np.mean(bg_arr,axis=0),axis=0)
-        # print("bg_col", bg_col)
-        l_bg = Layer(alpha=255*np.ones_like(text_arr,'uint8'),color=bg_col)
-        # print("bg_col_end")
+        # 使用已有的 font_color 对象来采样颜色
+        fg_col, bg_col = self.font_color.sample_from_data(np.ones((100,100,3), dtype=np.uint8) * 255)
+        return {
+            'fg_color': fg_col,  # 前景色（文本颜色）
+            'bg_color': bg_col   # 背景色
+        }
 
-        l_text.alpha = l_text.alpha * np.clip(0.88 + 0.1*np.random.randn(), 0.72, 1.0)
+    def sample_shadow(self):
+        """
+        采样阴影参数
+        """
+        return {
+            'use_shadow': np.random.rand() < self.p_drop_shadow,
+            'shadow_angle': np.pi/4 * np.random.choice([1,3,5,7]) + 0.5*np.random.randn(),
+            'shadow_opacity': 0.50 + 0.1*np.random.randn()
+        }
+
+    def sample_border(self):
+        """
+        采样边框参数
+        """
+        return {
+            'use_border': np.random.rand() < self.p_border,
+            'border_color': None  # 将在渲染时根据文本颜色确定
+        }
+
+    def sample(self):
+        """
+        采样渲染参数，确保英文和中文文本使用相同的风格
+        """
+        return {
+            'color': self.sample_color(),
+            'shadow': self.sample_shadow(),
+            'border': self.sample_border()
+        }
+
+    def color(self, bg_arr, text_arr, min_h, color_params=None):
+        """
+        使用预定义的参数渲染文本
+        bg_arr: 背景图像
+        text_arr: 文本mask列表
+        min_h: 最小字符高度
+        color_params: 渲染参数
+        """
+        if color_params is None:
+            color_params = self.sample()
+
+        # 获取颜色参数
+        fg_col = color_params['color']['fg_color']
+        bg_col = color_params['color']['bg_color']
+
+        # 创建文本层
+        l_text = Layer(alpha=text_arr[0], color=fg_col)
+        l_bg = Layer(alpha=255*np.ones_like(text_arr[0],'uint8'), color=bg_arr)
+        
         layers = [l_text]
         blends = []
 
-        # add border:
-        if np.random.rand() < self.p_border:
-            if min_h <= 15 : bsz = 1
-            elif 15 < min_h < 30: bsz = 3
-            else: bsz = 5
-            border_a = self.border(l_text.alpha, size=bsz)
-            l_border = Layer(border_a, self.color_border(l_text.color,l_bg.color))
+        # 添加边框
+        if color_params['border']['use_border']:
+            border_size = 3 if min_h > 30 else 1
+            border_a = self.border(l_text.alpha, size=border_size)
+            border_col = self.color_border(l_text.color, l_bg.color)
+            l_border = Layer(border_a, border_col)
             layers.append(l_border)
             blends.append('normal')
 
-        # add shadow:
-        if np.random.rand() < self.p_drop_shadow:
-            # shadow gaussian size:
-            if min_h <= 15 : bsz = 1
-            elif 15 < min_h < 30: bsz = 3
-            else: bsz = 5
-
-            # shadow angle:
-            theta = np.pi/4 * np.random.choice([1,3,5,7]) + 0.5*np.random.randn()
-
-            # shadow shift:
-            if min_h <= 15 : shift = 2
-            elif 15 < min_h < 30: shift = 7+np.random.randn()
-            else: shift = 15 + 3*np.random.randn()
-
-            # opacity:
-            op = 0.50 + 0.1*np.random.randn()
-
-            shadow = self.drop_shadow(l_text.alpha, theta, shift, 3*bsz, op)
+        # 添加阴影
+        if color_params['shadow']['use_shadow']:
+            shadow_size = 5 if min_h > 30 else 3
+            shadow = self.drop_shadow(l_text.alpha, 
+                                    color_params['shadow']['shadow_angle'],
+                                    shadow_size * 2,
+                                    shadow_size,
+                                    color_params['shadow']['shadow_opacity'])
             l_shadow = Layer(shadow, 0)
             layers.append(l_shadow)
             blends.append('normal')
-        
 
-        l_bg = Layer(alpha=255*np.ones_like(text_arr,'uint8'), color=bg_col)
+        # 添加背景层
         layers.append(l_bg)
         blends.append('normal')
-        l_normal = self.merge_down(layers,blends)
-        # now do poisson image editing:
-        l_bg = Layer(alpha=255*np.ones_like(text_arr,'uint8'), color=bg_arr)
-        l_out =  blit_images(l_normal.color,l_bg.color.copy())
-        
-        # plt.subplot(1,3,1)
-        # plt.imshow(l_normal.color)
-        # plt.subplot(1,3,2)
-        # plt.imshow(l_bg.color)
-        # plt.subplot(1,3,3)
-        # plt.imshow(l_out)
-        # plt.show()
-        
-        if l_out is None:
-            # poisson recontruction produced
-            # imperceptible text. In this case,
-            # just do a normal blend:
-            layers[-1] = l_bg
-            return self.merge_down(layers,blends).color
 
-        return l_out
-
+        # 合并所有层
+        return self.merge_down(layers, blends).color
 
     def check_perceptible(self, txt_mask, bg, txt_bg):
         """
@@ -414,62 +424,3 @@ class Colorize(object):
         diff = np.percentile(diff,[10,30,50,70,90])
         print ("color diff percentile :", diff)
         return diff, (bgo,txto)
-
-    def color(self, bg_arr, text_arr, hs, place_order=None, pad=20):
-        """
-        Return colorized text image.
-
-        text_arr : list of (n x m) numpy text alpha mask (unit8).
-        hs : list of minimum heights (scalar) of characters in each text-array. 
-        text_loc : [row,column] : location of text in the canvas.
-        canvas_sz : size of canvas image.
-        
-        return : nxmx3 rgb colorized text-image.
-        """
-        bg_arr = bg_arr.copy()
-        if bg_arr.ndim == 2 or bg_arr.shape[2]==1: # grayscale image:
-            bg_arr = np.repeat(bg_arr[:,:,None], 3, 2)
-
-        # get the canvas size:
-        canvas_sz = np.array(bg_arr.shape[:2])
-
-        # initialize the placement order:
-        if place_order is None:
-            place_order = np.array(range(len(text_arr)))
-
-        rendered = []
-        for i in place_order[::-1]:
-            # get the "location" of the text in the image:
-            ## this is the minimum x and y coordinates of text:
-            loc = np.where(text_arr[i])
-            lx, ly = np.min(loc[0]), np.min(loc[1])
-            mx, my = np.max(loc[0]), np.max(loc[1])
-            l = np.array([lx,ly])
-            m = np.array([mx,my])-l+1
-            text_patch = text_arr[i][l[0]:l[0]+m[0],l[1]:l[1]+m[1]]
-
-            # figure out padding:
-            ext = canvas_sz - (l+m)
-            num_pad = pad*np.ones(4,dtype='int32')
-            num_pad[:2] = np.minimum(num_pad[:2], l)
-            num_pad[2:] = np.minimum(num_pad[2:], ext)
-            text_patch = np.pad(text_patch, pad_width=((num_pad[0],num_pad[2]), (num_pad[1],num_pad[3])), mode='constant')
-            l -= num_pad[:2]
-
-
-            w,h = text_patch.shape
-            bg = bg_arr[l[0]:l[0]+w,l[1]:l[1]+h,:]
-
-            # import cv2
-            # cv2.imwrite('text_bg.png', bg)
-            # cv2.imwrite('text_patch.png', text_patch)
-
-            rdr0 = self.process(text_patch, bg, hs[i])
-            rendered.append(rdr0)
-
-            bg_arr[l[0]:l[0]+w,l[1]:l[1]+h,:] = rdr0#rendered[-1]
-
-
-            return bg_arr
-
-        return bg_arr
